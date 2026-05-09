@@ -168,6 +168,67 @@ function findEditorByUri(accessor: ServicesAccessor, uriStr?: string): ICodeEdit
 	return ces.getFocusedCodeEditor() ?? ces.getActiveCodeEditor();
 }
 
+// -------------------------------------------------------------------------------------------------
+// Compat adapters
+//
+// Extension code that reaches us via `vscode.commands.executeCommand` may pass selections /
+// ranges in either of two shapes:
+//
+//   • the public-API form used inside the extension host:
+//       Selection { anchor: {line, character}, active: {line, character} }
+//       Range     { start: {line, character}, end: {line, character} }
+//     (zero-based positions)
+//
+//   • the internal form used by the renderer directly:
+//       ISelection { selectionStartLineNumber, selectionStartColumn, positionLineNumber, positionColumn }
+//       IRange     { startLineNumber, startColumn, endLineNumber, endColumn }
+//     (one-based positions)
+//
+// We accept either by sniffing fields, so a vanilla dance bundle works without modification.
+// -------------------------------------------------------------------------------------------------
+
+function asISelection(s: any): ISelection | null {
+	if (!s || typeof s !== 'object') { return null; }
+	if (typeof s.selectionStartLineNumber === 'number'
+		&& typeof s.selectionStartColumn === 'number'
+		&& typeof s.positionLineNumber === 'number'
+		&& typeof s.positionColumn === 'number') {
+		return s as ISelection;
+	}
+	if (s.anchor && s.active
+		&& typeof s.anchor.line === 'number' && typeof s.anchor.character === 'number'
+		&& typeof s.active.line === 'number' && typeof s.active.character === 'number') {
+		return {
+			selectionStartLineNumber: s.anchor.line + 1,
+			selectionStartColumn: s.anchor.character + 1,
+			positionLineNumber: s.active.line + 1,
+			positionColumn: s.active.character + 1,
+		};
+	}
+	return null;
+}
+
+function asIRange(r: any): IRange | null {
+	if (!r || typeof r !== 'object') { return null; }
+	if (typeof r.startLineNumber === 'number'
+		&& typeof r.startColumn === 'number'
+		&& typeof r.endLineNumber === 'number'
+		&& typeof r.endColumn === 'number') {
+		return r as IRange;
+	}
+	if (r.start && r.end
+		&& typeof r.start.line === 'number' && typeof r.start.character === 'number'
+		&& typeof r.end.line === 'number' && typeof r.end.character === 'number') {
+		return {
+			startLineNumber: r.start.line + 1,
+			startColumn: r.start.character + 1,
+			endLineNumber: r.end.line + 1,
+			endColumn: r.end.character + 1,
+		};
+	}
+	return null;
+}
+
 // =================================================================================================
 // Commands — registered eagerly at module load
 // =================================================================================================
@@ -188,20 +249,29 @@ CommandsRegistry.registerCommand({
 
 CommandsRegistry.registerCommand({
 	id: '_dance.atomicEdit',
-	handler: (accessor, payload: { uri?: string; edits: Array<{ range: IRange; text: string }>; selections?: ISelection[] }) => {
+	handler: (accessor, payload: { uri?: string; edits: Array<{ range: any; text: string }>; selections?: any[] }) => {
 		if (!payload || !Array.isArray(payload.edits)) { return false; }
 		const editor = findEditorByUri(accessor, payload.uri);
 		if (!editor) { return false; }
 		const model = editor.getModel();
 		if (!model) { return false; }
+		const normalisedEdits: Array<{ range: IRange; text: string; forceMoveMarkers: boolean }> = [];
+		for (const e of payload.edits) {
+			const r = asIRange(e?.range);
+			if (!r || typeof e.text !== 'string') { return false; }
+			normalisedEdits.push({ range: r, text: e.text, forceMoveMarkers: true });
+		}
+		const normalisedSels: Selection[] = [];
+		if (Array.isArray(payload.selections)) {
+			for (const s of payload.selections) {
+				const ns = asISelection(s);
+				if (ns) { normalisedSels.push(Selection.liftSelection(ns)); }
+			}
+		}
 		editor.pushUndoStop();
-		const ok = editor.executeEdits('dance', payload.edits.map(e => ({
-			range: e.range,
-			text: e.text,
-			forceMoveMarkers: true,
-		})));
-		if (payload.selections && payload.selections.length > 0) {
-			editor.setSelections(payload.selections.map(s => Selection.liftSelection(s)));
+		const ok = editor.executeEdits('dance', normalisedEdits);
+		if (normalisedSels.length > 0) {
+			editor.setSelections(normalisedSels);
 		}
 		editor.pushUndoStop();
 		return ok;
@@ -238,17 +308,23 @@ CommandsRegistry.registerCommand({
 
 CommandsRegistry.registerCommand({
 	id: '_dance.pushSelections',
-	handler: (accessor, payload: { uri?: string; selections: ISelection[] }) => {
+	handler: (accessor, payload: { uri?: string; selections: any[] }) => {
 		if (!runtime) { return false; }
 		const editor = findEditorByUri(accessor, payload?.uri);
 		if (!editor || !payload || !Array.isArray(payload.selections)) { return false; }
+		const normalised: ISelection[] = [];
+		for (const s of payload.selections) {
+			const ns = asISelection(s);
+			if (ns) { normalised.push(ns); }
+		}
+		if (normalised.length === 0) { return false; }
 		const st = runtime.states.getOrCreate(editor);
 		if (st.selectionRing.length < SELECTION_RING_CAP) {
-			st.selectionRing.push(payload.selections);
+			st.selectionRing.push(normalised);
 			st.ringIdx = st.selectionRing.length - 1;
 		} else {
 			st.ringIdx = (st.ringIdx + 1) % SELECTION_RING_CAP;
-			st.selectionRing[st.ringIdx] = payload.selections;
+			st.selectionRing[st.ringIdx] = normalised;
 		}
 		return true;
 	},
