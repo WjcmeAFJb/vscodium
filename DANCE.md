@@ -108,8 +108,20 @@ The script tags `vN` and pushes; CI takes it from there.
 After a build run completes (manual or pushed):
 
 1. open the run on the Actions tab
-2. download the `vscodium-dance-linux-x64` artefact
-3. extract → look for a `.tar.gz` and run `./bin/codium`
+2. download the `vscodium-dance-linux-x64` artefact (a `.zip` containing the
+   actual `.deb` / `.rpm` / `.tar.gz`)
+3. extract the `.tar.gz` and run `./VSCodium-linux-x64-*/bin/codium`
+
+To verify Dance is alive:
+
+- the Extensions sidebar should list **Dance** (publisher `gregoire`,
+  marked "built-in")
+- run command `_dance.diag` from the Command Palette — its return value goes
+  to `Help → Toggle Developer Tools → Console`. A response like
+  `{ runtimeReady: true, editorsTracked: 0, modelsOpen: …, mode: 'normal' }`
+  means the workbench contribution is online
+- press `Escape` in any text editor to enter normal mode; `hjkl` should now
+  move the caret without inserting characters
 
 ## Updating the embedded Dance source
 
