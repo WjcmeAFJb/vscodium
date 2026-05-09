@@ -10,6 +10,11 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - dance-embed
+    paths-ignore:
+      - '**/*.md'
+      - 'dev/**'
 
 env:
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
@@ -139,14 +144,14 @@ jobs:
         run: ls -la assets/ || true
 
       - name: Release
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.generate_assets != true) }}
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
         run: ./release.sh
 
-      - name: Upload assets (no-release path)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.generate_assets == true }}
+      - name: Upload assets (branch / dispatch)
+        if: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vscodium-dance-linux-x64
