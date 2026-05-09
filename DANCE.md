@@ -79,13 +79,37 @@ single in-renderer call:
 
 ## Building in CI
 
-The `release-dance.yml` workflow:
+The `release-dance.yml` workflow runs in two jobs:
 
-- builds Linux x64 (initial scope; matrix can be extended)
-- packages a `.tar.gz` (no AppImage/snap to keep the dependency surface small)
-- publishes to GitHub Releases on `v*` tag pushes or via manual dispatch
+1. **compile** — applies patches, runs `gulp vscode-min-prepack` (~12 min on
+   `ubuntu-22.04`)
+2. **package** — runs inside `vscodium/vscodium-linux-build-agent:focal-x64`
+   to produce installable artifacts (~20 min)
+
+Triggers:
+- push to `dance-embed` (skipping `**/*.md` and `dev/**`) → uploads artefacts
+  to the run for download
+- push of a `v*` tag → publishes a GitHub Release with the same artefacts
+- manual `workflow_dispatch` (with `generate_assets=true` for download-only)
 
 Releases land at https://github.com/{owner}/vscodium/releases.
+
+## Cutting a release
+
+```bash
+./dev/cut-release.sh                # auto-derives version from upstream/stable.json
+./dev/cut-release.sh 1.116.05012    # or supply RELEASE_VERSION explicitly
+```
+
+The script tags `vN` and pushes; CI takes it from there.
+
+## Trying it out
+
+After a build run completes (manual or pushed):
+
+1. open the run on the Actions tab
+2. download the `vscodium-dance-linux-x64` artefact
+3. extract → look for a `.tar.gz` and run `./bin/codium`
 
 ## Updating the embedded Dance source
 
