@@ -9,7 +9,10 @@ on:
         default: false
   push:
     tags:
-      - 'v*'
+      # VSCodium-style bare-number tags (e.g. 1.116.03115). The Release step
+      # below only runs when github.ref starts with refs/tags/, so any tag
+      # push reaches the publish path; release.sh validates the version.
+      - '*'
     branches:
       - dance-embed
     paths-ignore:
@@ -144,14 +147,15 @@ jobs:
         run: ls -la assets/ || true
 
       - name: Release
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_USERNAME: ${{ github.repository_owner }}
+          RELEASE_VERSION: ${{ github.ref_name }}
         run: ./release.sh
 
       - name: Upload assets (branch / dispatch)
-        if: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vscodium-dance-linux-x64

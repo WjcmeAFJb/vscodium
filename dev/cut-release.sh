@@ -19,7 +19,8 @@ else
   VERSION="${MS_TAG}${TIME_PATCH}"
 fi
 
-TAG="v${VERSION}"
+# Tags match VSCodium's bare-number format so release.sh can find them.
+TAG="${VERSION}"
 
 if git tag --list "$TAG" | grep -q .; then
   echo "tag $TAG already exists locally — bump the version" >&2
