@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Binary assets
+src/stable/extensions/dance/assets/*.png binary
+src/stable/extensions/dance/assets/*.svg binary
+
+# Pre-built bundles — keep as-is, don't normalize line endings
+src/stable/extensions/dance/out/*.js -text

@@ -1,0 +1,18 @@
+Embed the Dance core contribution into the workbench module.
+
+The `src/stable/` overlay drops the contribution source into
+`src/vs/workbench/contrib/dance/browser/dance.contribution.ts`; this patch
+registers it so the workbench actually evaluates the file at startup.
+
+diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
+--- a/src/vs/workbench/workbench.common.main.ts
++++ b/src/vs/workbench/workbench.common.main.ts
+@@ -200,5 +200,8 @@
+ // Performance
+ import './contrib/performance/browser/performance.contribution.js';
+
++// Dance (modal editing) core contribution
++import './contrib/dance/browser/dance.contribution.js';
++
+ // Notebook
+ import './contrib/notebook/browser/notebook.contribution.js';

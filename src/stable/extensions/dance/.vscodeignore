@@ -1,0 +1,11 @@
+*
+*/
+assets/*
+out/*
+
+!LICENSE
+!README.md
+!package.json
+!assets/*.{svg,png}
+!out/extension.js
+!out/web-extension.js
