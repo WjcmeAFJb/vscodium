@@ -6,6 +6,11 @@
  *  the extension-host RPC. The contribution also owns lifecycle-bound caches that
  *  guarantee state never accumulates beyond the lifetime of the editor or model it
  *  belongs to, which is what keeps the editor from "slowing down with time".
+ *
+ *  Command handlers register at MODULE LOAD time so the fast paths exist before any
+ *  extension (built-in or otherwise) has a chance to probe for them. Per-editor and
+ *  per-model state is kept in the workbench-instantiated `DanceContribution` and
+ *  reached from the handlers via a module-level singleton.
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -48,7 +53,7 @@ class DanceRegexCache {
 	private readonly cache = new WeakMap<ITextModel, Map<string, IModelRegexEntry>>();
 
 	get(model: ITextModel, pattern: string, flags: string): RegExp {
-		const key = pattern + '' + flags;
+		const key = pattern + '\x00' + flags;
 		let perModel = this.cache.get(model);
 		if (!perModel) {
 			perModel = new Map();
@@ -138,164 +143,171 @@ class DanceEditorStates extends Disposable {
 }
 
 // =================================================================================================
-// The contribution
+// Module-level singletons (so command handlers can run before the contribution instantiates)
+// =================================================================================================
+
+const moduleRegexCache = new DanceRegexCache();
+
+/** Lazily-installed slots populated when the workbench contribution is constructed. */
+interface IDanceRuntime {
+	readonly modeKey: IContextKey<string>;
+	readonly states: DanceEditorStates;
+}
+
+let runtime: IDanceRuntime | undefined;
+
+function findEditorByUri(accessor: ServicesAccessor, uriStr?: string): ICodeEditor | null {
+	const ces = accessor.get(ICodeEditorService);
+	if (uriStr) {
+		const target = URI.parse(uriStr).toString();
+		for (const e of ces.listCodeEditors()) {
+			const m = e.getModel();
+			if (m && m.uri.toString() === target) { return e; }
+		}
+	}
+	return ces.getFocusedCodeEditor() ?? ces.getActiveCodeEditor();
+}
+
+// =================================================================================================
+// Commands — registered eagerly at module load
+// =================================================================================================
+
+CommandsRegistry.registerCommand({
+	id: '_dance.setMode',
+	handler: (accessor, mode: string) => {
+		if (typeof mode !== 'string') { return false; }
+		if (runtime) {
+			runtime.modeKey.set(mode);
+		} else {
+			// The workbench hasn't instantiated us yet — write through the regular service.
+			accessor.get(IContextKeyService).createKey('dance.mode', mode);
+		}
+		return true;
+	},
+});
+
+CommandsRegistry.registerCommand({
+	id: '_dance.atomicEdit',
+	handler: (accessor, payload: { uri?: string; edits: Array<{ range: IRange; text: string }>; selections?: ISelection[] }) => {
+		if (!payload || !Array.isArray(payload.edits)) { return false; }
+		const editor = findEditorByUri(accessor, payload.uri);
+		if (!editor) { return false; }
+		const model = editor.getModel();
+		if (!model) { return false; }
+		editor.pushUndoStop();
+		const ok = editor.executeEdits('dance', payload.edits.map(e => ({
+			range: e.range,
+			text: e.text,
+			forceMoveMarkers: true,
+		})));
+		if (payload.selections && payload.selections.length > 0) {
+			editor.setSelections(payload.selections.map(s => Selection.liftSelection(s)));
+		}
+		editor.pushUndoStop();
+		return ok;
+	},
+});
+
+CommandsRegistry.registerCommand({
+	id: '_dance.regex.exec',
+	handler: (accessor, payload: { uri: string; pattern: string; flags?: string; fromOffset?: number; max?: number }) => {
+		if (!payload || typeof payload.pattern !== 'string' || typeof payload.uri !== 'string') {
+			return [];
+		}
+		const ms = accessor.get(IModelService);
+		const uri = URI.parse(payload.uri);
+		const model = ms.getModel(uri);
+		if (!model) { return []; }
+		const requestedFlags = payload.flags ?? 'g';
+		const flags = requestedFlags.includes('g') ? requestedFlags : (requestedFlags + 'g');
+		let re: RegExp;
+		try { re = moduleRegexCache.get(model, payload.pattern, flags); } catch { return []; }
+		const text = model.getValue();
+		const max = Math.max(1, Math.min(payload.max ?? 1024, 16384));
+		const start = Math.max(0, Math.min(payload.fromOffset ?? 0, text.length));
+		re.lastIndex = start;
+		const out: Array<{ index: number; length: number }> = [];
+		let m: RegExpExecArray | null;
+		while (out.length < max && (m = re.exec(text)) !== null) {
+			out.push({ index: m.index, length: m[0].length });
+			if (m[0].length === 0) { re.lastIndex++; }
+		}
+		return out;
+	},
+});
+
+CommandsRegistry.registerCommand({
+	id: '_dance.pushSelections',
+	handler: (accessor, payload: { uri?: string; selections: ISelection[] }) => {
+		if (!runtime) { return false; }
+		const editor = findEditorByUri(accessor, payload?.uri);
+		if (!editor || !payload || !Array.isArray(payload.selections)) { return false; }
+		const st = runtime.states.getOrCreate(editor);
+		if (st.selectionRing.length < SELECTION_RING_CAP) {
+			st.selectionRing.push(payload.selections);
+			st.ringIdx = st.selectionRing.length - 1;
+		} else {
+			st.ringIdx = (st.ringIdx + 1) % SELECTION_RING_CAP;
+			st.selectionRing[st.ringIdx] = payload.selections;
+		}
+		return true;
+	},
+});
+
+CommandsRegistry.registerCommand({
+	id: '_dance.popSelections',
+	handler: (accessor, payload?: { uri?: string }) => {
+		if (!runtime) { return false; }
+		const editor = findEditorByUri(accessor, payload?.uri);
+		if (!editor) { return false; }
+		const st = runtime.states.getOrCreate(editor);
+		const sels = st.selectionRing[st.ringIdx];
+		if (!sels) { return false; }
+		editor.setSelections(sels.map(s => Selection.liftSelection(s)));
+		if (st.selectionRing.length > 0) {
+			st.ringIdx = (st.ringIdx - 1 + st.selectionRing.length) % st.selectionRing.length;
+		}
+		return true;
+	},
+});
+
+CommandsRegistry.registerCommand({
+	id: '_dance.diag',
+	handler: (accessor) => {
+		const ms = accessor.get(IModelService);
+		return {
+			version: 1,
+			runtimeReady: !!runtime,
+			editorsTracked: runtime?.states.size ?? 0,
+			modelsOpen: ms.getModels().length,
+			mode: runtime?.modeKey.get(),
+		};
+	},
+});
+
+// =================================================================================================
+// Workbench contribution — installs the per-editor state runtime and the bound mode context key
 // =================================================================================================
 
 class DanceContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.dance';
 
-	private readonly modeKey: IContextKey<string>;
-	private readonly regexCache = new DanceRegexCache();
-	private readonly states: DanceEditorStates;
-
 	constructor(
 		@ICodeEditorService codeEditorService: ICodeEditorService,
-		@IModelService private readonly modelService: IModelService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this.modeKey = DANCE_MODE_KEY.bindTo(contextKeyService);
-		this.states = this._register(new DanceEditorStates(codeEditorService));
-
-		this.registerCommands();
+		const states = this._register(new DanceEditorStates(codeEditorService));
+		const modeKey = DANCE_MODE_KEY.bindTo(contextKeyService);
+		runtime = { modeKey, states };
+		this.logService.info('[dance] core contribution online');
 	}
 
-	// ------------------------------------------------------------------------------------------
-	// Commands
-	// ------------------------------------------------------------------------------------------
-
-	private registerCommands(): void {
-
-		const findEditorByUri = (accessor: ServicesAccessor, uriStr?: string): ICodeEditor | null => {
-			const ces = accessor.get(ICodeEditorService);
-			if (uriStr) {
-				const target = URI.parse(uriStr).toString();
-				for (const e of ces.listCodeEditors()) {
-					const m = e.getModel();
-					if (m && m.uri.toString() === target) { return e; }
-				}
-			}
-			return ces.getFocusedCodeEditor() ?? ces.getActiveCodeEditor();
-		};
-
-		// _dance.setMode — synchronously update the dance mode context key.
-		// Avoids the round-trip through the extension host's `setContext` command.
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.setMode',
-			handler: (_accessor, mode: string) => {
-				if (typeof mode !== 'string') { return false; }
-				this.modeKey.set(mode);
-				return true;
-			},
-		}));
-
-		// _dance.atomicEdit — apply a list of edits and final selections in one transaction.
-		// Replaces a chain of vscode.workspace.applyEdit + editor.selections = ... that would
-		// otherwise require multiple ext-host -> renderer round trips.
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.atomicEdit',
-			handler: (accessor, payload: { uri?: string; edits: Array<{ range: IRange; text: string }>; selections?: ISelection[] }) => {
-				if (!payload || !Array.isArray(payload.edits)) { return false; }
-				const editor = findEditorByUri(accessor, payload.uri);
-				if (!editor) { return false; }
-				const model = editor.getModel();
-				if (!model) { return false; }
-				editor.pushUndoStop();
-				const ok = editor.executeEdits('dance', payload.edits.map(e => ({
-					range: e.range,
-					text: e.text,
-					forceMoveMarkers: true,
-				})));
-				if (payload.selections && payload.selections.length > 0) {
-					editor.setSelections(payload.selections.map(s => Selection.liftSelection(s)));
-				}
-				editor.pushUndoStop();
-				return ok;
-			},
-		}));
-
-		// _dance.regex.exec — cached regex execution against a model.
-		// Compiling a regex per command is one of the most common paper cuts; the WeakMap cache
-		// erases that cost on subsequent uses without ever leaking once the model is disposed.
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.regex.exec',
-			handler: (accessor, payload: { uri: string; pattern: string; flags?: string; fromOffset?: number; max?: number }) => {
-				if (!payload || typeof payload.pattern !== 'string' || typeof payload.uri !== 'string') {
-					return [];
-				}
-				const ms = accessor.get(IModelService);
-				const uri = URI.parse(payload.uri);
-				const model = ms.getModel(uri);
-				if (!model) { return []; }
-				const requestedFlags = payload.flags ?? 'g';
-				const flags = requestedFlags.includes('g') ? requestedFlags : (requestedFlags + 'g');
-				let re: RegExp;
-				try { re = this.regexCache.get(model, payload.pattern, flags); } catch { return []; }
-				const text = model.getValue();
-				const max = Math.max(1, Math.min(payload.max ?? 1024, 16384));
-				const start = Math.max(0, Math.min(payload.fromOffset ?? 0, text.length));
-				re.lastIndex = start;
-				const out: Array<{ index: number; length: number }> = [];
-				let m: RegExpExecArray | null;
-				while (out.length < max && (m = re.exec(text)) !== null) {
-					out.push({ index: m.index, length: m[0].length });
-					if (m[0].length === 0) { re.lastIndex++; } // avoid zero-length infinite loop
-				}
-				return out;
-			},
-		}));
-
-		// _dance.pushSelections — push a snapshot onto the per-editor selection ring (bounded).
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.pushSelections',
-			handler: (accessor, payload: { uri?: string; selections: ISelection[] }) => {
-				const editor = findEditorByUri(accessor, payload?.uri);
-				if (!editor || !payload || !Array.isArray(payload.selections)) { return false; }
-				const st = this.states.getOrCreate(editor);
-				if (st.selectionRing.length < SELECTION_RING_CAP) {
-					st.selectionRing.push(payload.selections);
-					st.ringIdx = st.selectionRing.length - 1;
-				} else {
-					st.ringIdx = (st.ringIdx + 1) % SELECTION_RING_CAP;
-					st.selectionRing[st.ringIdx] = payload.selections;
-				}
-				return true;
-			},
-		}));
-
-		// _dance.popSelections — restore a snapshot.
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.popSelections',
-			handler: (accessor, payload?: { uri?: string }) => {
-				const editor = findEditorByUri(accessor, payload?.uri);
-				if (!editor) { return false; }
-				const st = this.states.getOrCreate(editor);
-				const sels = st.selectionRing[st.ringIdx];
-				if (!sels) { return false; }
-				editor.setSelections(sels.map(s => Selection.liftSelection(s)));
-				if (st.selectionRing.length > 0) {
-					st.ringIdx = (st.ringIdx - 1 + st.selectionRing.length) % st.selectionRing.length;
-				}
-				return true;
-			},
-		}));
-
-		// _dance.diag — diagnostic command; returns counts so the user can confirm the patch is alive.
-		this._register(CommandsRegistry.registerCommand({
-			id: '_dance.diag',
-			handler: () => {
-				return {
-					version: 1,
-					editorsTracked: this.states.size,
-					modelsOpen: this.modelService.getModels().length,
-					mode: this.modeKey.get(),
-				};
-			},
-		}));
-
-		this.logService.info('[dance] core contribution registered');
+	override dispose(): void {
+		runtime = undefined;
+		super.dispose();
 	}
 }
 
@@ -318,9 +330,9 @@ Registry.as<IConfigurationRegistry>(ConfigExtensions.Configuration).registerConf
 });
 
 // =================================================================================================
-// Registration
+// Registration — earliest workbench phase that has services available
 // =================================================================================================
 
-registerWorkbenchContribution2(DanceContribution.ID, DanceContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(DanceContribution.ID, DanceContribution, WorkbenchPhase.BlockRestore);
 
 export { DanceContribution };
