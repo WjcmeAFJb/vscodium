@@ -1,3 +1,43 @@
+diff --git a/src/api/edit/index.ts b/src/api/edit/index.ts
+index 9c9f48c..695a977 100644
+--- a/src/api/edit/index.ts
++++ b/src/api/edit/index.ts
+@@ -5,6 +5,7 @@ import * as Positions from "../positions";
+ import * as Selections from "../selections";
+ import { Direction } from "../types";
+ import * as TrackedSelection from "../../utils/tracked-selection";
++import { hasFastPaths } from "../../utils/fast-path";
+ 
+ const enum Constants {
+   PositionMask = 0b00_11_1,
+@@ -772,6 +773,27 @@ export async function rotateContents(
+     return selections.slice();
+   }
+ 
++  // Renderer-side fast path. When the host workbench contribution
++  // (`_dance.rotateContents`) is present, the entire rotation — content
++  // capture, edit application, and selection update — happens in a single
++  // synchronous transaction inside the renderer. Without this, dance issues
++  // a chain of TextEditor.edit calls across the ext-host RPC boundary, and
++  // on a slow client they go stale and fail with "TextEditor edit failed".
++  if (hasFastPaths()) {
++    const editor = Context.current.editor;
++    const json = await vscode.commands.executeCommand<readonly any[] | null>(
++      "_dance.rotateContents",
++      { uri: editor.document.uri.toString(), selections, by },
++    );
++    if (Array.isArray(json) && json.length === len) {
++      return json.map((s) => new vscode.Selection(
++        new vscode.Position(s.selectionStartLineNumber - 1, s.selectionStartColumn - 1),
++        new vscode.Position(s.positionLineNumber - 1, s.positionColumn - 1),
++      ));
++    }
++    // If the fast path declined (returned null) we fall through to the legacy path.
++  }
++
+   const sortedSelections = Selections.sort(Direction.Forward, selections.slice());
+   const rotatedSortedSelections =
+     Array.from({ length: len }, (_, i) => sortedSelections[(i + by) % len]);
 diff --git a/src/utils/fast-path.ts b/src/utils/fast-path.ts
 new file mode 100644
 index 0000000..58b9ec7
@@ -68,56 +108,3 @@ index 0000000..58b9ec7
 +  // per-recording-toggle ext-host hop is negligible. Forwarding for symmetry.
 +  return vscode.commands.executeCommand("setContext", "dance.isRecording", recording);
 +}
-diff --git a/src/extension.ts b/src/extension.ts
-index 5b3a39e..1ec55b0 100644
---- a/src/extension.ts
-+++ b/src/extension.ts
-@@ -3,6 +3,7 @@ import * as vscode from "vscode";
- import * as api from "./api";
- import { Extension } from "./state/extension";
- import { extensionId, extensionName } from "./utils/constants";
-+import { probeFastPaths } from "./utils/fast-path";
- 
- /**
-  * Global state of the extension.
-@@ -17,6 +18,10 @@ let isActivated = false;
- export async function activate() {
-   isActivated = true;
- 
-+  // Detect VSCodium-with-dance patches up-front so subsequent hot paths can
-+  // synchronously check `hasFastPaths()` without awaiting a command lookup.
-+  void probeFastPaths();
-+
-   const extensionData = vscode.extensions.getExtension(extensionId),
-         extensionPackageJSON = extensionData?.packageJSON;
- 
-diff --git a/src/state/editors.ts b/src/state/editors.ts
-index 0935f74..3f89905 100644
---- a/src/state/editors.ts
-+++ b/src/state/editors.ts
-@@ -5,6 +5,7 @@ import type { Mode } from "./modes";
- import { command, commands, Context, Positions, SelectionBehavior, Selections } from "../api";
- import { extensionName } from "../utils/constants";
- import { assert } from "../utils/errors";
-+import { setModeContext } from "../utils/fast-path";
- 
- /**
-  * Dance-specific state related to a single `vscode.TextEditor`.
-@@ -239,7 +240,7 @@ export class PerEditorState implements vscode.Disposable {
-     editor.options.lineNumbers = mode.lineNumbers;
-     editor.options.cursorStyle = mode.cursorStyle;
- 
--    return vscode.commands.executeCommand("setContext", extensionName + ".mode", mode.name);
-+    return setModeContext(mode.name);
-   }
- 
-   /**
-@@ -252,7 +253,7 @@ export class PerEditorState implements vscode.Disposable {
-     if (!newEditorIsActive) {
-       this.extension.statusBar.activeModeSegment.setContent("<no active mode>");
- 
--      return vscode.commands.executeCommand("setContext", extensionName + ".mode", undefined);
-+      return setModeContext(undefined);
-     }
- 
-     return Promise.resolve();

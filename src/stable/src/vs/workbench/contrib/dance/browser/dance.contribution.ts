@@ -18,7 +18,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
 import { ISelection, Selection } from '../../../../editor/common/core/selection.js';
-import { IRange } from '../../../../editor/common/core/range.js';
+import { IRange, Range } from '../../../../editor/common/core/range.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
@@ -275,6 +275,84 @@ CommandsRegistry.registerCommand({
 		}
 		editor.pushUndoStop();
 		return ok;
+	},
+});
+
+// _dance.rotateContents — rotate the contents of a list of non-overlapping selections in one
+// renderer-side transaction. Avoids dance scheduling N round-trips of editor.edit / setSelections,
+// which is the path that "TextEditor edit failed" floods on a slow client.
+CommandsRegistry.registerCommand({
+	id: '_dance.rotateContents',
+	handler: (accessor, payload: { uri?: string; selections: any[]; by: number }) => {
+		if (!payload || !Array.isArray(payload.selections) || typeof payload.by !== 'number') {
+			return null;
+		}
+		const editor = findEditorByUri(accessor, payload.uri);
+		if (!editor) { return null; }
+		const model = editor.getModel();
+		if (!model) { return null; }
+
+		// Normalise + remember the caller's order so we can emit results in the same order.
+		const liftedOrig: Selection[] = [];
+		for (const s of payload.selections) {
+			const ns = asISelection(s);
+			if (!ns) { return null; }
+			liftedOrig.push(Selection.liftSelection(ns));
+		}
+		const n = liftedOrig.length;
+		if (n === 0) { return []; }
+		const by = ((payload.by % n) + n) % n;
+		if (by === 0) {
+			return liftedOrig.map(s => s.toJSON());
+		}
+
+		// Index by ascending start position for the edit transaction (non-overlapping ⇒ unique sort).
+		const order = liftedOrig.map((_, i) => i)
+			.sort((a, b) => Range.compareRangesUsingStarts(liftedOrig[a], liftedOrig[b]));
+
+		// Snapshot text BEFORE we issue any edit so the rotation source isn't shifted by the edits.
+		const sortedRanges = order.map(i => liftedOrig[i]);
+		const sortedTexts = sortedRanges.map(r => model.getValueInRange(r));
+		const newTextsSorted = sortedTexts.map((_, i) => sortedTexts[(i - by + n) % n]);
+
+		const edits: Array<{ range: IRange; text: string; forceMoveMarkers: boolean }> = [];
+		for (let i = 0; i < n; i++) {
+			edits.push({ range: sortedRanges[i], text: newTextsSorted[i], forceMoveMarkers: true });
+		}
+
+		// Compute where each replacement lands in post-edit coordinates by accumulating the net
+		// offset shift in ascending order.
+		let cumulativeShift = 0;
+		const newSortedSelections: Selection[] = sortedRanges.map((r, i) => {
+			const startOffset = model.getOffsetAt({ lineNumber: r.startLineNumber, column: r.startColumn }) + cumulativeShift;
+			const oldLen = model.getOffsetAt({ lineNumber: r.endLineNumber, column: r.endColumn })
+				- model.getOffsetAt({ lineNumber: r.startLineNumber, column: r.startColumn });
+			const newLen = newTextsSorted[i].length;
+			cumulativeShift += newLen - oldLen;
+			// We don't know the post-edit positions yet; we'll resolve to (line, col) below using
+			// the freshly-edited model.
+			return { _start: startOffset, _end: startOffset + newLen } as unknown as Selection;
+		});
+
+		editor.pushUndoStop();
+		const ok = editor.executeEdits('dance.rotateContents', edits);
+		editor.pushUndoStop();
+		if (!ok) { return null; }
+
+		// Now resolve offsets to (line, col) against the post-edit model.
+		const resolvedSorted = newSortedSelections.map((tmp: any) => {
+			const start = model.getPositionAt(tmp._start);
+			const end = model.getPositionAt(tmp._end);
+			return new Selection(start.lineNumber, start.column, end.lineNumber, end.column);
+		});
+
+		// Re-emit in the caller's original order.
+		const out = new Array<Selection>(n);
+		for (let i = 0; i < n; i++) {
+			out[order[i]] = resolvedSorted[i];
+		}
+		editor.setSelections(out);
+		return out.map(s => s.toJSON());
 	},
 });
 
