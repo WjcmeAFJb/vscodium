@@ -28,6 +28,7 @@
     "*"
   ],
   "extensionKind": [
+    "web",
     "ui",
     "workspace"
   ],
