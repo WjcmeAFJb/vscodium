@@ -7,7 +7,7 @@ registers it so the workbench actually evaluates the file at startup.
 diff --git a/src/vs/workbench/workbench.common.main.ts b/src/vs/workbench/workbench.common.main.ts
 --- a/src/vs/workbench/workbench.common.main.ts
 +++ b/src/vs/workbench/workbench.common.main.ts
-@@ -200,5 +200,8 @@
+@@ -209,5 +209,8 @@
  // Performance
  import './contrib/performance/browser/performance.contribution.js';
 
