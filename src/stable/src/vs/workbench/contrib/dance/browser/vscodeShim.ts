@@ -32,6 +32,20 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBulkEditService, ResourceTextEdit, ResourceEdit } from '../../../../editor/browser/services/bulkEditService.js';
 
 // =================================================================================================
+// API command translations
+//
+// vscode's extension host translates a handful of public-API command IDs into
+// their workbench-internal command IDs via `MainThreadCommands.$executeCommand`
+// (see src/vs/workbench/api/common/extHostApiCommands.ts).  We run dance in the
+// main thread, so the translation has to happen here.  Only the commands dance
+// actually uses are listed.
+// =================================================================================================
+
+const API_COMMAND_TRANSLATIONS: Record<string, string> = {
+	'setContext': '_setContext',
+};
+
+// =================================================================================================
 // Value types (vscode public API equivalents)
 // =================================================================================================
 
@@ -585,7 +599,14 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 				return new VscodeDisposable(() => sub.dispose());
 			},
 			executeCommand<T>(id: string, ...args: any[]): Promise<T | undefined> {
-				return commandService.executeCommand<T>(id, ...args);
+				// Translate the public-API command names that vscode normally routes
+				// through MainThreadCommands.$executeCommand into their workbench-
+				// internal command IDs. Dance issues `setContext` extensively to drive
+				// its mode context key; in the extension host that gets remapped to
+				// `_setContext`, but we're now running on the main thread so the API
+				// shim has to do the translation itself.
+				const translated = API_COMMAND_TRANSLATIONS[id] ?? id;
+				return commandService.executeCommand<T>(translated, ...args);
 			},
 			getCommands(_filterInternal?: boolean): Promise<string[]> {
 				// We intentionally do NOT filter '_'-prefixed commands when

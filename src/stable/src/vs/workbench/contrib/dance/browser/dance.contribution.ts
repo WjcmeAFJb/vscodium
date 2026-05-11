@@ -511,6 +511,18 @@ Registry.as<IConfigurationRegistry>(ConfigExtensions.Configuration).registerConf
 
 // eslint-disable-next-line no-console
 console.info('[dance] contribution module loaded; registering with workbench…');
+
+// Expose a tiny diagnostic on the global so headless tests can interrogate the
+// state of dance command registration from outside the workbench.
+(globalThis as any).__danceDebug = {
+	listCommands: () => Object.keys(CommandsRegistry.getCommands()),
+	hasCommand: (id: string) => !!CommandsRegistry.getCommand(id),
+	commandCount: () => Object.keys(CommandsRegistry.getCommands()).length,
+	danceCommandCount: () => Object.keys(CommandsRegistry.getCommands()).filter(k => k.startsWith('dance.') || k.startsWith('_dance.')).length,
+	runtime: () => runtime,
+	manifest: () => ({ activated: !!runtime, modeKey: runtime?.modeKey.get() }),
+};
+
 registerWorkbenchContribution2(DanceContribution.ID, DanceContribution, WorkbenchPhase.BlockRestore);
 
 export { DanceContribution };
