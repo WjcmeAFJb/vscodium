@@ -595,8 +595,13 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 			onDidSaveTextDocument: new VscodeEventEmitter<unknown>().event,
 			onWillSaveTextDocument: new VscodeEventEmitter<unknown>().event,
 			getConfiguration(section?: string, _scope?: any) {
-				const root = configService.getValue<any>(section ?? '') ?? {};
-				return {
+				// Only call configService.getValue() with a section when one is provided.
+				// Calling it with an empty string returns the full configuration object,
+				// which is both expensive (thousands of keys) and breaks dance's pattern
+				// of also using config["key"] indexing — the spread would shadow the
+				// getter-based accessors below.
+				const root = section ? (configService.getValue<any>(section) ?? {}) : {};
+				const config: any = {
 					get<T>(key: string, defaultValue?: T): T | undefined {
 						const value = configService.getValue<T>(section ? `${section}.${key}` : key);
 						return value !== undefined ? value : defaultValue;
@@ -619,8 +624,13 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 						const t = target ?? ConfigurationTarget.WORKSPACE;
 						return configService.updateValue(section ? `${section}.${key}` : key, value, t);
 					},
-					...root,
 				};
+				// Also expose the section's values as indexable properties so that
+				// `config["someKey"]` works the way vscode's WorkspaceConfiguration does.
+				if (root && typeof root === 'object') {
+					Object.assign(config, root);
+				}
+				return config;
 			},
 			applyEdit(edit: any): Promise<boolean> {
 				const operations: ResourceEdit[] = [];
