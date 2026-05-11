@@ -29,6 +29,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { registerWorkbenchContribution2, IWorkbenchContribution, WorkbenchPhase } from '../../../common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { DanceMainThreadLoader } from './danceLoader.js';
 import { createVscodeShim } from './vscodeShim.js';
 
@@ -455,6 +456,7 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@ICommandService commandService: ICommandService,
 	) {
 		super();
 		// eslint-disable-next-line no-console
@@ -463,6 +465,10 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 		const modeKey = DANCE_MODE_KEY.bindTo(contextKeyService);
 		runtime = { modeKey, states };
 		this.logService.info('[dance] core contribution online');
+
+		// Expose runCommand on the debug global so headless tests can drive dance
+		// directly through the workbench's command service.
+		(globalThis as any).__danceDebug.runCommand = (id: string, ...args: any[]) => commandService.executeCommand(id, ...args);
 
 		// Load dance directly into the workbench's main thread.  This is the
 		// "no IPC" path: dance.activate() runs as a regular function call here,
