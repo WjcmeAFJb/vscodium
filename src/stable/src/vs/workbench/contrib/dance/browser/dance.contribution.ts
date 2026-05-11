@@ -28,6 +28,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { registerWorkbenchContribution2, IWorkbenchContribution, WorkbenchPhase } from '../../../common/contributions.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { DanceMainThreadLoader } from './danceLoader.js';
+import { createVscodeShim } from './vscodeShim.js';
 
 // =================================================================================================
 // Context keys
@@ -451,12 +454,29 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 		@ICodeEditorService codeEditorService: ICodeEditorService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ILogService private readonly logService: ILogService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		const states = this._register(new DanceEditorStates(codeEditorService));
 		const modeKey = DANCE_MODE_KEY.bindTo(contextKeyService);
 		runtime = { modeKey, states };
 		this.logService.info('[dance] core contribution online');
+
+		// Load dance directly into the workbench's main thread.  This is the
+		// "no IPC" path: dance.activate() runs as a regular function call here,
+		// and every vscode.* call hits a workbench service synchronously.
+		//
+		// IMPORTANT: the ServicesAccessor handed back by invokeFunction is only
+		// valid synchronously inside the callback (see InstantiationService.invokeFunction).
+		// We therefore have to build the shim — which resolves every workbench service it
+		// needs — inside the callback, and hand the resolved shim to the loader.
+		const shimDisposables = new DisposableStore();
+		this._register(shimDisposables);
+		const shim = instantiationService.invokeFunction(accessor =>
+			createVscodeShim(accessor, shimDisposables));
+		const loader = new DanceMainThreadLoader(shim, shimDisposables, this.logService);
+		this._register(loader);
+		void loader.activate();
 	}
 
 	override dispose(): void {

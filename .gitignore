@@ -1,4 +1,6 @@
 vscode*
+!src/stable/src/vs/workbench/contrib/dance/browser/vscodeShim.ts
+!src/stable/src/vs/workbench/contrib/dance/browser/vscode*.ts
 VS*/*
 VSCode*
 VSCodium*
