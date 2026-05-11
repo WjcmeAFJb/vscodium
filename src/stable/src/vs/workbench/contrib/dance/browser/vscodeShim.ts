@@ -437,6 +437,30 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 		ThemeColor: class { constructor(public id: string) { } },
 		ThemeIcon: class { constructor(public id: string, public color?: any) { } },
 
+		// TreeItem — dance subclasses this for its register view. Mirror the public-API
+		// shape so `class Foo extends vscode.TreeItem { ... }` resolves the super class.
+		TreeItem: class {
+			label: string | undefined;
+			collapsibleState: number | undefined;
+			id: string | undefined;
+			iconPath: any;
+			description: string | boolean | undefined;
+			resourceUri: any;
+			tooltip: string | undefined;
+			command: any;
+			contextValue: string | undefined;
+			checkboxState: any;
+			accessibilityInformation: any;
+			constructor(labelOrResource: string | { label: string; highlights?: [number, number][] } | any, collapsibleState?: number) {
+				this.label = typeof labelOrResource === 'string' ? labelOrResource : (labelOrResource && labelOrResource.label) ?? undefined;
+				this.collapsibleState = collapsibleState;
+			}
+		},
+
+		// TreeItemLabel — public-API shape; dance constructs these inline as object literals,
+		// but expose the constructor too just in case.
+		TreeItemLabel: class { constructor(public label: string, public highlights?: [number, number][]) { } },
+
 		// CancellationToken / CancellationTokenSource
 		CancellationTokenSource: class {
 			private readonly _e = new Emitter<void>();
