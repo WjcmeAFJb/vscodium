@@ -520,11 +520,13 @@ console.info('[dance] contribution module loaded; registering with workbench…'
 
 // Expose a tiny diagnostic on the global so headless tests can interrogate the
 // state of dance command registration from outside the workbench.
+// CommandsRegistry.getCommands() returns a Map, so we have to iterate, not
+// Object.keys (which yields [] on Map instances).
 (globalThis as any).__danceDebug = {
-	listCommands: () => Object.keys(CommandsRegistry.getCommands()),
+	listCommands: () => Array.from(CommandsRegistry.getCommands().keys()),
 	hasCommand: (id: string) => !!CommandsRegistry.getCommand(id),
-	commandCount: () => Object.keys(CommandsRegistry.getCommands()).length,
-	danceCommandCount: () => Object.keys(CommandsRegistry.getCommands()).filter(k => k.startsWith('dance.') || k.startsWith('_dance.')).length,
+	commandCount: () => CommandsRegistry.getCommands().size,
+	danceCommandCount: () => Array.from(CommandsRegistry.getCommands().keys()).filter(k => k.startsWith('dance.') || k.startsWith('_dance.')).length,
 	runtime: () => runtime,
 	manifest: () => ({ activated: !!runtime, modeKey: runtime?.modeKey.get() }),
 };
