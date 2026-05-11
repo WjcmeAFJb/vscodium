@@ -646,20 +646,38 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 				// of also using config["key"] indexing — the spread would shadow the
 				// getter-based accessors below.
 				const root = section ? (configService.getValue<any>(section) ?? {}) : {};
+				// Fallback default-value lookup: dance's contributes.configuration may not
+				// have been processed into the workbench configurationRegistry yet by the
+				// time dance.activate() runs (extension scanning happens after BlockRestore).
+				// To unblock activation, read the manifest's `contributes.configuration`
+				// directly when the registry has no default to offer.
+				const manifestDefaultFor = (fullKey: string): unknown => {
+					const m = (vscodeShim as any).__danceManifest;
+					const props = m?.contributes?.configuration?.properties;
+					if (props && Object.prototype.hasOwnProperty.call(props, fullKey)) {
+						return props[fullKey]?.default;
+					}
+					return undefined;
+				};
 				const config: any = {
 					get<T>(key: string, defaultValue?: T): T | undefined {
-						const value = configService.getValue<T>(section ? `${section}.${key}` : key);
-						return value !== undefined ? value : defaultValue;
+						const full = section ? `${section}.${key}` : key;
+						const value = configService.getValue<T>(full);
+						if (value !== undefined) { return value; }
+						const md = manifestDefaultFor(full);
+						if (md !== undefined) { return md as T; }
+						return defaultValue;
 					},
 					has(key: string): boolean {
-						return configService.getValue(section ? `${section}.${key}` : key) !== undefined;
+						const full = section ? `${section}.${key}` : key;
+						return configService.getValue(full) !== undefined || manifestDefaultFor(full) !== undefined;
 					},
 					inspect<T>(key: string) {
 						const full = section ? `${section}.${key}` : key;
 						const v = configService.inspect<T>(full);
 						return {
 							key: full,
-							defaultValue: v?.defaultValue,
+							defaultValue: (v?.defaultValue !== undefined ? v.defaultValue : manifestDefaultFor(full)) as T | undefined,
 							globalValue: v?.userValue,
 							workspaceValue: v?.workspaceValue,
 							workspaceFolderValue: v?.workspaceFolderValue,
