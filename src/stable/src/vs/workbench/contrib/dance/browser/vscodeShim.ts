@@ -265,15 +265,39 @@ class VscodeTextEditor {
 		return (this.editor.getVisibleRanges() ?? []).map(fromInternalRange);
 	}
 	get options(): { tabSize: number; insertSpaces: boolean; cursorStyle: number; lineNumbers: number } {
-		const model = this.editor.getModel();
-		const opts = model?.getOptions();
-		const rawTabSize = opts?.tabSize;
-		return {
-			tabSize: typeof rawTabSize === 'number' ? rawTabSize : 4,
-			insertSpaces: opts?.insertSpaces ?? true,
-			cursorStyle: (this.editor.getOption(/* CursorStyle option index */ 24) as unknown as number | undefined) ?? 1,
-			lineNumbers: 1,
+		// Return a "live" object whose property setters route back to the
+		// underlying ICodeEditor.  Dance frequently does e.g.
+		// `editor.options.cursorStyle = mode.cursorStyle` to drive the cursor
+		// shape per mode — that has to actually take effect, not silently
+		// mutate a throwaway snapshot object.
+		const ed = this.editor;
+		const model = ed.getModel();
+		const modelOpts = model?.getOptions();
+		const rawTabSize = modelOpts?.tabSize;
+		const tabSize = typeof rawTabSize === 'number' ? rawTabSize : 4;
+		const insertSpaces = modelOpts?.insertSpaces ?? true;
+		// Translate the public-API numeric enums to the string forms that
+		// IEditorOptions wants (cursorStyle: 'line'|'block'|..., lineNumbers:
+		// 'on'|'off'|'relative'|'interval').
+		const CURSOR_STYLES = ['line', 'line', 'block', 'underline', 'line-thin', 'block-outline', 'underline-thin'] as const;
+		const LINE_NUMBERS = ['off', 'on', 'relative', 'interval'] as const;
+		const liveOptions = {
+			get tabSize() { return tabSize; },
+			set tabSize(v: number) { model?.updateOptions({ tabSize: v }); },
+			get insertSpaces() { return insertSpaces; },
+			set insertSpaces(v: boolean) { model?.updateOptions({ insertSpaces: v }); },
+			get cursorStyle() { return (ed.getOption(/* CursorStyle option index */ 24) as unknown as number | undefined) ?? 1; },
+			set cursorStyle(v: number) {
+				const s = CURSOR_STYLES[v] ?? 'line';
+				ed.updateOptions({ cursorStyle: s });
+			},
+			get lineNumbers() { return (ed.getOption(/* LineNumbers option index */ 75) as unknown as { renderType?: number } | undefined)?.renderType ?? 1; },
+			set lineNumbers(v: number) {
+				const s = LINE_NUMBERS[v] ?? 'on';
+				ed.updateOptions({ lineNumbers: s });
+			},
 		};
+		return liveOptions;
 	}
 	get viewColumn(): number | undefined { return undefined; }
 	private _sync(): void {
