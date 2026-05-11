@@ -12,8 +12,8 @@
  *  active workbench services; there is no marshalling boundary anywhere.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Emitter } from '../../../../base/common/event.js';
+import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Position as InternalPosition } from '../../../../editor/common/core/position.js';
 import { Range as InternalRange, IRange } from '../../../../editor/common/core/range.js';
@@ -25,11 +25,8 @@ import { ICodeEditorService } from '../../../../editor/browser/services/codeEdit
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
-import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBulkEditService, ResourceTextEdit, ResourceEdit } from '../../../../editor/browser/services/bulkEditService.js';
 
@@ -352,10 +349,7 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 	const commandService = accessor.get(ICommandService);
 	const configService = accessor.get(IConfigurationService);
 	const notificationService = accessor.get(INotificationService);
-	const dialogService = accessor.get(IDialogService);
 	const quickInputService = accessor.get(IQuickInputService);
-	const contextKeyService = accessor.get(IContextKeyService);
-	const keybindingService = accessor.get(IKeybindingService);
 	const logService = accessor.get(ILogService);
 	const bulkEditService = accessor.get(IBulkEditService);
 
@@ -565,10 +559,17 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 				});
 				return new VscodeDisposable(() => sub.dispose());
 			},
-			executeCommand<T>(id: string, ...args: any[]): Promise<T> {
+			executeCommand<T>(id: string, ...args: any[]): Promise<T | undefined> {
 				return commandService.executeCommand<T>(id, ...args);
 			},
 			getCommands(_filterInternal?: boolean): Promise<string[]> {
+				// We intentionally do NOT filter '_'-prefixed commands when
+				// filterInternal is true.  Dance's fast-path probe uses
+				// getCommands(true) to discover our `_dance.*` workbench helpers
+				// (single-transaction rotateContents, atomicEdit, etc.) — hiding
+				// them would force dance onto the multi-call slow path, which
+				// while now in-process is still measurably slower than the
+				// single-shot fast path.
 				return Promise.resolve(Object.keys(CommandsRegistry.getCommands()));
 			},
 		},
