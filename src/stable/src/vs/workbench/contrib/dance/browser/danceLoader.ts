@@ -40,8 +40,18 @@ export class DanceMainThreadLoader extends Disposable {
 		if (this._activated) { return; }
 		this._activated = true;
 
+		// Surface progress via console.* too, because logService output goes through
+		// the workbench's logger pipeline which doesn't always reach the browser
+		// devtools console when something goes wrong early.
+		// eslint-disable-next-line no-console
+		console.info('[dance] loader.activate(): bundle len=' + (DANCE_BUNDLE_JS?.length ?? 0));
+
 		let manifest: any = {};
-		try { manifest = JSON.parse(DANCE_MANIFEST_JSON); } catch (e) { this.logService.error('[dance] failed to parse manifest', e as Error); }
+		try { manifest = JSON.parse(DANCE_MANIFEST_JSON); } catch (e) {
+			this.logService.error('[dance] failed to parse manifest', e as Error);
+			// eslint-disable-next-line no-console
+			console.error('[dance] failed to parse manifest', e);
+		}
 
 		const shim = this.shim;
 		(shim as any).__danceManifest = manifest;
@@ -57,8 +67,12 @@ export class DanceMainThreadLoader extends Disposable {
 			const fn = new Function('module', 'exports', 'require', '__filename', '__dirname', DANCE_BUNDLE_JS);
 			fn(moduleObj, moduleObj.exports, requireFn, '/dance/extension.js', '/dance');
 			this._exports = moduleObj.exports;
+			// eslint-disable-next-line no-console
+			console.info('[dance] bundle eval ok; exports keys=' + Object.keys(this._exports ?? {}).join(','));
 		} catch (e) {
 			this.logService.error('[dance] bundle failed to load', e as Error);
+			// eslint-disable-next-line no-console
+			console.error('[dance] bundle failed to load', e);
 			return;
 		}
 
@@ -84,12 +98,21 @@ export class DanceMainThreadLoader extends Disposable {
 
 		try {
 			if (typeof this._exports?.activate === 'function') {
+				// eslint-disable-next-line no-console
+				console.info('[dance] calling dance.activate(ctx) …');
 				const res = await Promise.resolve(this._exports.activate(ctx));
 				(ctx.extension as any).exports = res;
 				this.logService.info('[dance] activated in renderer main thread');
+				// eslint-disable-next-line no-console
+				console.info('[dance] activate() returned; subscriptions=' + subscriptions.length);
+			} else {
+				// eslint-disable-next-line no-console
+				console.warn('[dance] exports.activate is not a function — typeof=' + typeof this._exports?.activate);
 			}
 		} catch (e) {
 			this.logService.error('[dance] activate() threw', e as Error);
+			// eslint-disable-next-line no-console
+			console.error('[dance] activate() threw', e);
 		}
 
 		// Track any disposables the extension push'd to ctx.subscriptions and dispose them

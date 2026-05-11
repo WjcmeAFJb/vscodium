@@ -457,6 +457,8 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
+		// eslint-disable-next-line no-console
+		console.info('[dance] DanceContribution constructor running …');
 		const states = this._register(new DanceEditorStates(codeEditorService));
 		const modeKey = DANCE_MODE_KEY.bindTo(contextKeyService);
 		runtime = { modeKey, states };
@@ -507,6 +509,8 @@ Registry.as<IConfigurationRegistry>(ConfigExtensions.Configuration).registerConf
 // Registration — earliest workbench phase that has services available
 // =================================================================================================
 
+// eslint-disable-next-line no-console
+console.info('[dance] contribution module loaded; registering with workbench…');
 registerWorkbenchContribution2(DanceContribution.ID, DanceContribution, WorkbenchPhase.BlockRestore);
 
 export { DanceContribution };
