@@ -22,6 +22,7 @@ import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
+import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -283,12 +284,12 @@ class VscodeTextEditor {
 			set tabSize(v: number) { model?.updateOptions({ tabSize: v }); },
 			get insertSpaces() { return insertSpaces; },
 			set insertSpaces(v: boolean) { model?.updateOptions({ insertSpaces: v }); },
-			get cursorStyle() { return (ed.getOption(/* CursorStyle option index */ 24) as unknown as number | undefined) ?? 1; },
+			get cursorStyle() { return (ed.getOption(EditorOption.cursorStyle) as unknown as number | undefined) ?? 1; },
 			set cursorStyle(v: number) {
 				const s = CURSOR_STYLES[v] ?? 'line';
 				ed.updateOptions({ cursorStyle: s });
 			},
-			get lineNumbers() { return (ed.getOption(/* LineNumbers option index */ 75) as unknown as { renderType?: number } | undefined)?.renderType ?? 1; },
+			get lineNumbers() { return (ed.getOption(EditorOption.lineNumbers) as unknown as { renderType?: number } | undefined)?.renderType ?? 1; },
 			set lineNumbers(v: number) {
 				const s = LINE_NUMBERS[v] ?? 'on';
 				ed.updateOptions({ lineNumbers: s });
