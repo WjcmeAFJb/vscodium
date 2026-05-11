@@ -25,12 +25,15 @@ DANCE_EXT_DIR="vscode/extensions/dance"
 DANCE_CONTRIB_DIR="vscode/src/vs/workbench/contrib/dance/browser"
 if [[ -d "${DANCE_EXT_DIR}" && -d "${DANCE_CONTRIB_DIR}" ]]; then
   echo "[dance] neutering ${DANCE_EXT_DIR}/package.json (kept for manifest contributes only)"
+  # Drop main/browser AND activationEvents entirely: the vscode build's manifest
+  # validator refuses a manifest that has activationEvents without main/browser
+  # (even an empty list).  With none of these keys, the extension loader treats
+  # the dir as manifest-only — contributes still register but no code is loaded.
   python3 - "${DANCE_EXT_DIR}/package.json" <<'PYEOF'
 import json, sys
 p = sys.argv[1]
 with open(p) as f: d = json.load(f)
-d.pop("main", None); d.pop("browser", None)
-d["activationEvents"] = []
+d.pop("main", None); d.pop("browser", None); d.pop("activationEvents", None)
 with open(p, "w") as f: json.dump(d, f, indent=2)
 PYEOF
 

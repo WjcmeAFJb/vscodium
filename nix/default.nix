@@ -128,12 +128,13 @@ rec {
           # Neuter the on-disk extension so the extension host treats it as
           # manifest-only — contributes still register, but no code is loaded
           # via IPC. The actual code runs in the workbench's own JS thread.
+          # We drop activationEvents entirely; the vsce manifest validator
+          # refuses a manifest that declares activationEvents but no main/browser.
           python3 - "$target/extensions/dance/package.json" <<'PYEOF'
           import json, sys
           p = sys.argv[1]
           with open(p) as f: d = json.load(f)
-          d.pop("main", None); d.pop("browser", None)
-          d["activationEvents"] = []
+          d.pop("main", None); d.pop("browser", None); d.pop("activationEvents", None)
           with open(p, "w") as f: json.dump(d, f, indent=2)
           PYEOF
 
