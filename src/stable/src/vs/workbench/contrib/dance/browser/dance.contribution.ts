@@ -497,6 +497,22 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 				danceEditorsActive: danceActive,
 			};
 		};
+		// Report the real selections of the active editor (0-based line/char, like the
+		// public vscode API) plus the selected text — used to verify movement/selection
+		// commands actually take effect on the editor.
+		(globalThis as any).__danceDebug.selections = () => {
+			const ed = shim.window.activeTextEditor;
+			if (!ed) { return { error: 'no active editor' }; }
+			const doc = ed.document;
+			return {
+				count: ed.selections.length,
+				selections: ed.selections.map((s: any) => ({
+					anchor: [s.anchor.line, s.anchor.character],
+					active: [s.active.line, s.active.character],
+					text: doc.getText(s),
+				})),
+			};
+		};
 
 		void loader.activate();
 	}
