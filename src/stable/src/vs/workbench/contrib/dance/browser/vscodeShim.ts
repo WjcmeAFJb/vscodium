@@ -267,13 +267,26 @@ class VscodeTextEditorEdit {
 const editorById = new Map<string, VscodeTextEditor>();
 
 class VscodeTextEditor {
-	public selections: VscodeSelection[];
+	// Backing field for the public `selections` accessor. dance both reads it
+	// (`editor.selections`) and writes it (`editor.selections = [...]`); the
+	// write MUST push to the underlying monaco editor, otherwise every dance
+	// movement/selection command silently no-ops.
+	private _selections: VscodeSelection[];
 	constructor(public readonly editor: ICodeEditor) {
-		this.selections = (editor.getSelections() ?? []).map(fromInternalSelection);
+		this._selections = (editor.getSelections() ?? []).map(fromInternalSelection);
 	}
 	get document(): VscodeTextDocument { return getDocument(this.editor.getModel()!); }
-	get selection(): VscodeSelection { return this.selections[0]; }
-	set selection(value: VscodeSelection) { this.selections = [value]; this._sync(); }
+	get selections(): VscodeSelection[] { return this._selections; }
+	set selections(value: VscodeSelection[]) {
+		this._selections = value.slice();
+		this._sync();
+	}
+	/** Update the cached selections from a monaco-originated change without pushing back. */
+	_updateFromEditor(): void {
+		this._selections = (this.editor.getSelections() ?? []).map(fromInternalSelection);
+	}
+	get selection(): VscodeSelection { return this._selections[0]; }
+	set selection(value: VscodeSelection) { this.selections = [value]; }
 	get visibleRanges(): VscodeRange[] {
 		return (this.editor.getVisibleRanges() ?? []).map(fromInternalRange);
 	}
@@ -314,7 +327,11 @@ class VscodeTextEditor {
 	}
 	get viewColumn(): number | undefined { return undefined; }
 	private _sync(): void {
-		this.editor.setSelections(this.selections.map(toInternalSelection));
+		if (this._selections.length === 0) { return; }
+		this.editor.setSelections(this._selections.map(toInternalSelection));
+		// Keep the primary selection in view, matching vscode's behavior when an
+		// extension assigns editor.selections.
+		this.editor.revealRange(toInternalRange(this._selections[0]));
 	}
 	edit(callback: (builder: VscodeTextEditorEdit) => void, _options?: { undoStopBefore?: boolean; undoStopAfter?: boolean }): Promise<boolean> {
 		const builder = new VscodeTextEditorEdit();
@@ -325,7 +342,7 @@ class VscodeTextEditor {
 		const ok = this.editor.executeEdits('dance', ops.map(op => ({ ...op, text: op.text ?? '' })));
 		this.editor.pushUndoStop();
 		// Re-read the editor's selections after the edit.
-		this.selections = (this.editor.getSelections() ?? []).map(fromInternalSelection);
+		this._updateFromEditor();
 		return Promise.resolve(ok);
 	}
 	revealRange(range: VscodeRange, _revealType?: number): void {
@@ -345,10 +362,12 @@ function getOrMakeEditor(editor: ICodeEditor | null): VscodeTextEditor | undefin
 		editorById.set(id, e);
 		editor.onDidDispose(() => editorById.delete(id));
 		editor.onDidChangeCursorSelection(() => {
-			e!.selections = (editor.getSelections() ?? []).map(fromInternalSelection);
+			// Refresh the cached selections from the editor (do NOT go through the
+			// setter, which would push back to monaco and recurse).
+			e!._updateFromEditor();
 		});
 	} else {
-		e.selections = (editor.getSelections() ?? []).map(fromInternalSelection);
+		e._updateFromEditor();
 	}
 	return e;
 }
@@ -419,6 +438,8 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 		const v = getOrMakeEditor(e);
 		ctxDisposables.add(e.onDidChangeCursorSelection(() => {
 			if (v) {
+				// Make sure the cached selections reflect the editor before we notify.
+				v._updateFromEditor();
 				onDidChangeTextEditorSelection.fire({ textEditor: v, selections: v.selections, kind: undefined });
 			}
 		}));
