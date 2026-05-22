@@ -20,8 +20,9 @@ import { Range as InternalRange, IRange } from '../../../../editor/common/core/r
 import { Selection as InternalSelection, ISelection } from '../../../../editor/common/core/selection.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
-import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { ICodeEditor, isCodeEditor, isDiffEditor } from '../../../../editor/browser/editorBrowser.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
@@ -367,6 +368,30 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 	const quickInputService = accessor.get(IQuickInputService);
 	const logService = accessor.get(ILogService);
 	const bulkEditService = accessor.get(IBulkEditService);
+	const editorService = accessor.get(IEditorService);
+
+	// Resolve the workbench's currently-active code editor.  We go through
+	// IEditorService.activeTextEditorControl (the canonical "what editor pane is
+	// active") rather than ICodeEditorService focus tracking, which is unreliable
+	// for the workbench's pane editors.
+	const activeCodeEditor = (): ICodeEditor | null => {
+		const control = editorService.activeTextEditorControl;
+		if (isCodeEditor(control)) { return control; }
+		if (isDiffEditor(control)) { return control.getModifiedEditor(); }
+		// Fall back to focus tracking for embedded/standalone editors.
+		return codeEditorService.getFocusedCodeEditor() ?? codeEditorService.getActiveCodeEditor();
+	};
+	const visibleCodeEditors = (): ICodeEditor[] => {
+		const result: ICodeEditor[] = [];
+		for (const control of editorService.visibleTextEditorControls) {
+			if (isCodeEditor(control)) { result.push(control); }
+			else if (isDiffEditor(control)) { result.push(control.getModifiedEditor()); }
+		}
+		// Make sure the active editor is always included (defensive).
+		const active = activeCodeEditor();
+		if (active && !result.includes(active)) { result.push(active); }
+		return result;
+	};
 
 	// --- Events that dance subscribes to ---
 	const onDidChangeActiveTextEditor = new VscodeEventEmitter<VscodeTextEditor | undefined>();
@@ -389,6 +414,7 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 		onDidChangeTextDocument.dispose();
 	}));
 
+	// Per-editor signals (cursor + scroll) still come from each ICodeEditor.
 	const hookEditor = (e: ICodeEditor) => {
 		const v = getOrMakeEditor(e);
 		ctxDisposables.add(e.onDidChangeCursorSelection(() => {
@@ -401,20 +427,25 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 				onDidChangeTextEditorVisibleRanges.fire({ textEditor: v, visibleRanges: v.visibleRanges });
 			}
 		}));
-		ctxDisposables.add(e.onDidFocusEditorWidget(() => { onDidChangeActiveTextEditor.fire(v); }));
 		return v;
 	};
-	// Hook editors already present at construction time.
 	for (const e of codeEditorService.listCodeEditors()) { hookEditor(e); }
-	ctxDisposables.add(codeEditorService.onCodeEditorAdd(e => {
-		const v = hookEditor(e);
-		const focused = codeEditorService.getFocusedCodeEditor();
-		if (focused === e) { onDidChangeActiveTextEditor.fire(v); }
-		onDidChangeVisibleTextEditors.fire(codeEditorService.listCodeEditors().map(c => getOrMakeEditor(c)!).filter(Boolean));
-	}));
-	ctxDisposables.add(codeEditorService.onCodeEditorRemove(_e => {
-		onDidChangeVisibleTextEditors.fire(codeEditorService.listCodeEditors().map(c => getOrMakeEditor(c)!).filter(Boolean));
-	}));
+	ctxDisposables.add(codeEditorService.onCodeEditorAdd(e => { hookEditor(e); }));
+
+	// Active / visible editor signals come from the workbench's IEditorService —
+	// the canonical source of "which editor pane is active/visible". CRITICAL:
+	// dance's Editors does `_editors.get(activeEditor)` and relies on the
+	// visible-editors event having populated `_editors` *first*, so we always
+	// fire onDidChangeVisibleTextEditors before onDidChangeActiveTextEditor.
+	const fireVisible = () => {
+		onDidChangeVisibleTextEditors.fire(visibleCodeEditors().map(c => getOrMakeEditor(c)!).filter(Boolean));
+	};
+	const fireActive = () => {
+		fireVisible();
+		onDidChangeActiveTextEditor.fire(getOrMakeEditor(activeCodeEditor()));
+	};
+	ctxDisposables.add(editorService.onDidVisibleEditorsChange(fireVisible));
+	ctxDisposables.add(editorService.onDidActiveEditorChange(fireActive));
 	ctxDisposables.add(modelService.onModelAdded(m => onDidOpenTextDocument.fire(getDocument(m))));
 	ctxDisposables.add(modelService.onModelRemoved(m => onDidCloseTextDocument.fire(getDocument(m))));
 	ctxDisposables.add(configService.onDidChangeConfiguration(e => onDidChangeConfiguration.fire({
@@ -488,8 +519,8 @@ export function createVscodeShim(accessor: ServicesAccessor, ctxDisposables: Dis
 
 		// window
 		window: {
-			get activeTextEditor() { return getOrMakeEditor(codeEditorService.getFocusedCodeEditor() ?? codeEditorService.getActiveCodeEditor()); },
-			get visibleTextEditors() { return codeEditorService.listCodeEditors().map(c => getOrMakeEditor(c)!).filter(Boolean); },
+			get activeTextEditor() { return getOrMakeEditor(activeCodeEditor()); },
+			get visibleTextEditors() { return visibleCodeEditors().map(c => getOrMakeEditor(c)!).filter(Boolean); },
 			get state() { return { focused: true }; },
 			onDidChangeActiveTextEditor: onDidChangeActiveTextEditor.event,
 			onDidChangeVisibleTextEditors: onDidChangeVisibleTextEditors.event,

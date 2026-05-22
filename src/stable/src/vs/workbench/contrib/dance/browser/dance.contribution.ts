@@ -484,6 +484,20 @@ class DanceContribution extends Disposable implements IWorkbenchContribution {
 			createVscodeShim(accessor, shimDisposables));
 		const loader = new DanceMainThreadLoader(shim, shimDisposables, this.logService);
 		this._register(loader);
+
+		// Headless-test probe: report what the shim sees as the active/visible editors,
+		// plus whether dance's own Extension picked up an active editor. The dance
+		// bundle exports its Extension singleton as `extensionState`.
+		(globalThis as any).__danceDebug.editors = () => {
+			let danceActive: boolean | undefined;
+			try { danceActive = !!(loader as any)._exports?.extensionState?.editors?.active; } catch { /* ignore */ }
+			return {
+				shimActiveTextEditor: !!shim.window.activeTextEditor,
+				shimVisibleCount: shim.window.visibleTextEditors.length,
+				danceEditorsActive: danceActive,
+			};
+		};
+
 		void loader.activate();
 	}
 
